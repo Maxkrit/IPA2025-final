@@ -1,7 +1,7 @@
 import os
 import requests
 
-ACCESS_TOKEN = os.environ.get("WEBEX_ACCESS_TOKEN")
+ACCESS_TOKEN = os.environ.get("token")
 
 if not ACCESS_TOKEN:
     print("❌ ไม่พบโทเคน Webex กรุณาตั้งค่า WEBEX_ACCESS_TOKEN")

@@ -28,7 +28,7 @@ ACCESS_TOKEN = os.environ["token"]
 
 # Defines a variable that will hold the roomId
 roomIdToGetMessages = (
-    "Y2lzY29zcGFyazovL3VybjpURUFNOnVzLXdlc3QtMl9yL1JPT00vN2Q0Nzk0MDAtYWFiOS0xMWYwLWIyMjEtM2Q0YjM3Nzk0OTVl"
+    "Y2lzY29zcGFyazovL3VybjpURUFNOnVzLXdlc3QtMl9yL1JPT00vYmQwODczMTAtNmMyNi0xMWYwLWE1MWMtNzkzZDM2ZjZjM2Zm"
 )
 
 last_message_id = None  # เก็บ ID ของข้อความล่าสุดที่เราอ่านแล้ว
@@ -69,33 +69,109 @@ while True:
     # แยกข้อความ
     parts = message_text.lstrip("/").split()
     student_id = parts[0]
+    output = parts[1]
 
-    
+    if output in ["restconf", "netconf", "showrun", "gigabit_status"]:
+        # แบบที่ 1: /student_id restconf หรือ netconf
+        if len(parts) == 2 and parts[1].lower() in ["restconf", "netconf"]:
+            system = parts[1].lower()
+            student_system[student_id] = system
+            print(student_system)
+            sendtexttowebex.send_message_webex(roomIdToGetMessages, ACCESS_TOKEN, f"OK: {system.capitalize()}")
+            continue
+            # กรณี 3: /student_id showrun|gigabit_status
+        elif len(parts) == 2 and parts[1].lower() in ["showrun", "gigabit_status"]:
+            command = parts[1].lower()
+            router_ip = None
+            # เรียกฟังก์ชันตาม command
+            if command == "showrun":
+                responseMessage, ansible_output = ansible_final.showrun(router_ip, student_id)
+                if responseMessage == "fuck":
+                    # ถ้า responseMessage เป็น "fuck" จะไม่ทำอะไร (หรือจะแสดงข้อความเฉพาะก็ได้)
+                    print("Response is 'fuck' — ไม่ส่งไฟล์ไป Webex")
+                    
+                else:
+                    # เขียนผลลัพธ์ลงไฟล์ใหม่
+                    filename = f"{student_id}_running_config.txt"
+                    myfile = f"{student_id}_runningconfig_router.txt"
+                    with open(filename, "w") as f:
+                        f.write(ansible_output)
 
-    # แบบที่ 1: /student_id restconf หรือ netconf
+                    # เปิดไฟล์เพื่อแนบส่งไป Webex
+                    with open(myfile, "rb") as f:
+                        fileobject = f.read()
+
+                    # เตรียม multipart form สำหรับส่งไฟล์ไป Webex
+
+                    myfile = f"{student_id}_runningconfig_router.txt"
+                    postData = MultipartEncoder(
+                        fields={
+                            "roomId": roomIdToGetMessages,
+                            "text": f"show running config",
+                            "files": (myfile, fileobject, "text/plain")
+                        }
+                    )
+
+                    HTTPHeaders = {
+                        "Authorization": f"Bearer {ACCESS_TOKEN}",
+                        "Content-Type": postData.content_type
+                    }
+
+                    #ส่งไฟล์ไป Webex
+                    response = requests.post(
+                        "https://webexapis.com/v1/messages",
+                        data=postData,
+                        headers=HTTPHeaders
+                    )
+
+                    print(f"ส่งไฟล์ {filename} ไปยัง Webex เรียบร้อยแล้ว ")
+            elif command == "gigabit_status":
+                status_text = netmiko_final.gigabit_status()  # ดึงสถานะ interfaces
+
+                # ส่งข้อความกลับ Webex
+                postData = json.dumps({
+                    "roomId": roomIdToGetMessages,
+                    "text": f"{status_text}"
+                })
+
+                HTTPHeaders = {
+                    "Authorization": f"Bearer {ACCESS_TOKEN}",
+                    "Content-Type": "application/json"
+                }
+
+                response = requests.post(
+                    "https://webexapis.com/v1/messages",
+                    data=postData,
+                    headers=HTTPHeaders
+                )
+
+                if response.status_code == 200:
+                    print("Status sent to Webex!")
+                else:
+                    print("Failed to send message:", response.text)
+                continue
     if len(parts) == 2:
-        system = parts[1].lower()
-        student_system[student_id] = system
-        sendtexttowebex.send_message_webex(roomIdToGetMessages, ACCESS_TOKEN, f"OK: {system.capitalize()}")
-        print(f"{student_id} set system to {system}")
-        continue  # รอ command ต่อไป
-
+        system = student_system.get(student_id)
+        if system == "restconf" or system == "netconf":
+            if parts[1] not in ["10.0.15.61", "10.0.15.62", "10.0.15.63", "10.0.15.64", "10.0.15.65"]:
+                sendtexttowebex.send_message_webex(roomIdToGetMessages, ACCESS_TOKEN, "Error: No IP specified")
+            elif parts[1] not in ["create", "delete", "enable", "disable", "status"]:
+                sendtexttowebex.send_message_webex(roomIdToGetMessages, ACCESS_TOKEN, "Error: No command found. ")
+        else:
+            sendtexttowebex.send_message_webex(roomIdToGetMessages, ACCESS_TOKEN, "Error: No method specified")
     # แบบที่ 2: /student_id router_ip command
-    elif len(parts) >= 3:
+    if len(parts) >= 3:
         router_ip = parts[1]
         command = parts[2].lower()
 
         # ดึง system ที่เก็บไว้
         system = student_system.get(student_id)
         if not system:
-            sendtexttowebex.send_message_webex(
-                roomIdToGetMessages,
-                ACCESS_TOKEN,
+            sendtexttowebex.send_message_webex(roomIdToGetMessages, ACCESS_TOKEN, 
                 "Error: system not set. Please send /student_id restconf or /student_id netconf first."
             )
             continue
-
-        # เรียกฟังก์ชันตาม system
+        
         if system == "restconf":
             if command == "create":
                 restconf_final.create(student_id, router_ip, roomIdToGetMessages, ACCESS_TOKEN)
@@ -120,30 +196,7 @@ while True:
             elif command == "status":
                 netconf_final.status(student_id, router_ip, roomIdToGetMessages, ACCESS_TOKEN)
 
-        elif command == "giagbit_status":
-            status_text = netmiko_final.gigabit_status()  # ดึงสถานะ interfaces
-
-            # ส่งข้อความกลับ Webex
-            postData = json.dumps({
-                "roomId": roomIdToGetMessages,
-                "text": f"{status_text}"
-            })
-
-            HTTPHeaders = {
-                "Authorization": f"Bearer {ACCESS_TOKEN}",
-                "Content-Type": "application/json"
-            }
-
-            response = requests.post(
-                "https://webexapis.com/v1/messages",
-                data=postData,
-                headers=HTTPHeaders
-            )
-
-            if response.status_code == 200:
-                print("Status sent to Webex!")
-            else:
-                print("Failed to send message:", response.text)
+        
         
         
 # 6. Complete the code to post the message to the Webex Teams room.
@@ -160,48 +213,4 @@ while True:
         # Read Send a Message with Attachments Local File Attachments
         # https://developer.webex.com/docs/basics for more detail
 
-        if command == "showrun":
-            print("showrun")
-            
-            # เรียกฟังก์ชัน showrun จาก ansible_final
-            responseMessage, ansible_output = ansible_final.showrun(router_ip, student_id)
-
-            if responseMessage == "fuck":
-                # ถ้า responseMessage เป็น "fuck" จะไม่ทำอะไร (หรือจะแสดงข้อความเฉพาะก็ได้)
-                print("Response is 'fuck' — ไม่ส่งไฟล์ไป Webex")
-                
-            else:
-                # เขียนผลลัพธ์ลงไฟล์ใหม่
-                filename = f"{student_id}_running_config.txt"
-                myfile = f"{student_id}_runningconfig_router.txt"
-                with open(filename, "w") as f:
-                    f.write(ansible_output)
-
-                # เปิดไฟล์เพื่อแนบส่งไป Webex
-                with open(myfile, "rb") as f:
-                    fileobject = f.read()
-
-                # เตรียม multipart form สำหรับส่งไฟล์ไป Webex
-
-                myfile = f"{student_id}_runningconfig_router.txt"
-                postData = MultipartEncoder(
-                    fields={
-                        "roomId": roomIdToGetMessages,
-                        "text": f"show running config",
-                        "files": (myfile, fileobject, "text/plain")
-                    }
-                )
-
-                HTTPHeaders = {
-                    "Authorization": f"Bearer {ACCESS_TOKEN}",
-                    "Content-Type": postData.content_type
-                }
-
-                #ส่งไฟล์ไป Webex
-                response = requests.post(
-                    "https://webexapis.com/v1/messages",
-                    data=postData,
-                    headers=HTTPHeaders
-                )
-
-                print(f"ส่งไฟล์ {filename} ไปยัง Webex เรียบร้อยแล้ว ")
+    

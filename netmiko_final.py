@@ -21,30 +21,42 @@ def gigabit_status():
     try:
         print(f"🔌 Connecting to router {device_ip} ...")
         with ConnectHandler(**device_params) as ssh:
-            # ปิด paging
             ssh.send_command("terminal length 0", expect_string=r"#")
-            
-            # ดึงสถานะ interfaces
+
             output = ssh.send_command("show ip interface brief", use_textfsm=True)
-            
-            up = 0
-            down = 0
-            admin_down = 0
+            print(type(output))  # debug
+            print(output)        # debug
+
+            up = down = admin_down = 0
             ans_list = []
-            
-            for intf in output:
-                if intf['interface'].startswith("GigabitEthernet"):
-                    ans_list.append(f"{intf['interface']} {intf['status']}")
-                    if intf['status'] == "up":
-                        up += 1
-                    elif intf['status'] == "down":
-                        down += 1
-                    elif intf['status'] == "administratively down":
-                        admin_down += 1
+
+            # ถ้า TextFSM ใช้ไม่ได้ → แปลงแบบ manual
+            if isinstance(output, str):
+                lines = output.splitlines()
+                for line in lines:
+                    if "GigabitEthernet" in line:
+                        cols = line.split()
+                        iface, status = cols[0], cols[-1]
+                        ans_list.append(f"{iface} {status}")
+                        if status == "up":
+                            up += 1
+                        elif status == "down":
+                            down += 1
+                        elif "administratively down" in line:
+                            admin_down += 1
+            else:
+                for intf in output:
+                    if "GigabitEthernet" in intf['interface']:
+                        ans_list.append(f"{intf['interface']} {intf['status']}")
+                        if intf['status'] == "up":
+                            up += 1
+                        elif intf['status'] == "down":
+                            down += 1
+                        elif intf['status'] == "administratively down":
+                            admin_down += 1
 
             summary = f"-> {up} up, {down} down, {admin_down} administratively down"
-            output = ", ".join(ans_list) + " " + summary
-            return output
+            return ", ".join(ans_list) + " " + summary
 
     except Exception as e:
         print(f"❌ Connection failed: {e}")
