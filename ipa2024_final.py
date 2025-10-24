@@ -14,7 +14,9 @@ from requests_toolbelt.multipart.encoder import MultipartEncoder
 
 import ansible_final
 import restconf_final
+import netconf_final
 import netmiko_final
+import sendtexttowebex
 
 #######################################################################################
 # 2. Assign the Webex accesssetx WEBEX_TOKEN "OGFmNzY3MjMtMzM5OS00MTYwLThkM2QtYTBmN2EzZGQ4YmQ1YTA1YWFkNzktMDRh_PS65_e37c9b35-5d15-4275-8997-b5c6f91a842d"
@@ -28,39 +30,25 @@ ACCESS_TOKEN = os.environ["token"]
 roomIdToGetMessages = (
     "Y2lzY29zcGFyazovL3VybjpURUFNOnVzLXdlc3QtMl9yL1JPT00vN2Q0Nzk0MDAtYWFiOS0xMWYwLWIyMjEtM2Q0YjM3Nzk0OTVl"
 )
-router_ip = "10.0.15.63"
+
 last_message_id = None  # เก็บ ID ของข้อความล่าสุดที่เราอ่านแล้ว
+student_system = {}     # เก็บ system ของแต่ละ student_id
 
 while True:
-    # always add 1 second of delay to the loop to not go over a rate limit of API calls
     time.sleep(1)
 
-    # the Webex Teams GET parameters
-    #  "roomId" is the ID of the selected room
-    #  "max": 1  limits to get only the very last message in the room
     getParameters = {"roomId": roomIdToGetMessages, "max": 1}
-
-    
-    # the Webex Teams HTTP header, including the Authoriztion
     getHTTPHeader = {"Authorization": f"Bearer {ACCESS_TOKEN}"}
 
-# 4. Provide the URL to the Webex Teams messages API, and extract location from the received message.
-    
-    # Send a GET request to the Webex Teams messages API.
-    # - Use the GetParameters to get only the latest message.
-    # - Store the message in the "r" variable.
     r = requests.get(
         "https://webexapis.com/v1/messages",
         params=getParameters,
         headers=getHTTPHeader,
     )
-    # verify if the retuned HTTP status code is 200/OK
-    if not r.status_code == 200:
-        raise Exception(
-            "Incorrect reply from Webex Teams API. Status code: {}".format(r.status_code)
-        )
 
-    # get the JSON formatted returned data
+    if r.status_code != 200:
+        raise Exception(f"Incorrect reply from Webex Teams API. Status code: {r.status_code}")
+
     messages = r.json().get("items", [])
     if not messages:
         continue
@@ -71,57 +59,92 @@ while True:
 
     if not message_text.startswith("/66070007"):
         continue
-    
+
     if message_id == last_message_id:
         continue
 
     print("Received message:", message_text)
     last_message_id = message_id
 
-    # แยก student_id และ command
+    # แยกข้อความ
     parts = message_text.lstrip("/").split()
     student_id = parts[0]
-    command = " ".join(parts[1:]) if len(parts) > 1 else ""
 
-# 5. Complete the logic for each command
+    
 
-    responseMessage = ""
-    # ตรวจสอบว่าข้อความนี้เราอ่านแล้วหรือยัง
-    if command == ("create"):
-        restconf_final.create(student_id,router_ip, roomIdToGetMessages, ACCESS_TOKEN)
-    elif command == "delete":
-        restconf_final.delete(student_id,router_ip, roomIdToGetMessages, ACCESS_TOKEN)
-    elif command == "enable":
-        restconf_final.enable(student_id,router_ip, roomIdToGetMessages, ACCESS_TOKEN)
-    elif command == "disable":
-        restconf_final.disable(student_id,router_ip, roomIdToGetMessages, ACCESS_TOKEN)
-    elif command == "status":
-        restconf_final.status(student_id,router_ip, roomIdToGetMessages, ACCESS_TOKEN)
-    elif command == "gigabit_status":
-        status_text = netmiko_final.gigabit_status()  # ดึงสถานะ interfaces
+    # แบบที่ 1: /student_id restconf หรือ netconf
+    if len(parts) == 2:
+        system = parts[1].lower()
+        student_system[student_id] = system
+        sendtexttowebex.send_message_webex(roomIdToGetMessages, ACCESS_TOKEN, f"OK: {system.capitalize()}")
+        print(f"{student_id} set system to {system}")
+        continue  # รอ command ต่อไป
 
-        # ส่งข้อความกลับ Webex
-        postData = json.dumps({
-            "roomId": roomIdToGetMessages,
-            "text": f"{status_text}"
-        })
+    # แบบที่ 2: /student_id router_ip command
+    elif len(parts) >= 3:
+        router_ip = parts[1]
+        command = parts[2].lower()
 
-        HTTPHeaders = {
-            "Authorization": f"Bearer {ACCESS_TOKEN}",
-            "Content-Type": "application/json"
-        }
+        # ดึง system ที่เก็บไว้
+        system = student_system.get(student_id)
+        if not system:
+            sendtexttowebex.send_message_webex(
+                roomIdToGetMessages,
+                ACCESS_TOKEN,
+                "Error: system not set. Please send /student_id restconf or /student_id netconf first."
+            )
+            continue
 
-        response = requests.post(
-            "https://webexapis.com/v1/messages",
-            data=postData,
-            headers=HTTPHeaders
-        )
+        # เรียกฟังก์ชันตาม system
+        if system == "restconf":
+            if command == "create":
+                restconf_final.create(student_id, router_ip, roomIdToGetMessages, ACCESS_TOKEN)
+            elif command == "delete":
+                restconf_final.delete(student_id, router_ip, roomIdToGetMessages, ACCESS_TOKEN)
+            elif command == "enable":
+                restconf_final.enable(student_id, router_ip, roomIdToGetMessages, ACCESS_TOKEN)
+            elif command == "disable":
+                restconf_final.disable(student_id, router_ip, roomIdToGetMessages, ACCESS_TOKEN)
+            elif command == "status":
+                restconf_final.status(student_id, router_ip, roomIdToGetMessages, ACCESS_TOKEN)
 
-        if response.status_code == 200:
-            print("Status sent to Webex!")
-        else:
-            print("Failed to send message:", response.text)
-    else:
+        elif system == "netconf":
+            if command == "create":
+                netconf_final.create(student_id, router_ip, roomIdToGetMessages, ACCESS_TOKEN)
+            elif command == "delete":
+                netconf_final.delete(student_id, router_ip, roomIdToGetMessages, ACCESS_TOKEN)
+            elif command == "enable":
+                netconf_final.enable(student_id, router_ip, roomIdToGetMessages, ACCESS_TOKEN)
+            elif command == "disable":
+                netconf_final.disable(student_id, router_ip, roomIdToGetMessages, ACCESS_TOKEN)
+            elif command == "status":
+                netconf_final.status(student_id, router_ip, roomIdToGetMessages, ACCESS_TOKEN)
+
+        elif command == "giagbit_status":
+            status_text = netmiko_final.gigabit_status()  # ดึงสถานะ interfaces
+
+            # ส่งข้อความกลับ Webex
+            postData = json.dumps({
+                "roomId": roomIdToGetMessages,
+                "text": f"{status_text}"
+            })
+
+            HTTPHeaders = {
+                "Authorization": f"Bearer {ACCESS_TOKEN}",
+                "Content-Type": "application/json"
+            }
+
+            response = requests.post(
+                "https://webexapis.com/v1/messages",
+                data=postData,
+                headers=HTTPHeaders
+            )
+
+            if response.status_code == 200:
+                print("Status sent to Webex!")
+            else:
+                print("Failed to send message:", response.text)
+        
         
 # 6. Complete the code to post the message to the Webex Teams room.
 
@@ -138,6 +161,7 @@ while True:
         # https://developer.webex.com/docs/basics for more detail
 
         if command == "showrun":
+            print("showrun")
             
             # เรียกฟังก์ชัน showrun จาก ansible_final
             responseMessage, ansible_output = ansible_final.showrun(router_ip, student_id)
